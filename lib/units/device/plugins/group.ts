@@ -31,7 +31,7 @@ export default syrup.serial()
 
         group.on('join', () => {
             service.freezeRotation(0)
-            service.wake()
+            service.sendCommand('input keyevent 224') // KEYCODE_WAKEUP
             service.acquireWakeLock()
         })
 
@@ -54,7 +54,7 @@ export default syrup.serial()
                             service.sendCommand('settings put system screen_brightness_mode 0'),
                             service.sendCommand('settings put system screen_brightness 0'),
                             service.setMasterMute(true),
-                            service.sendCommand('input keyevent 26'),
+                            service.sendCommand('input keyevent 223'), // KEYCODE_SLEEP
                             service.sendCommand('settings put global http_proxy :0'),
                             service.sendCommand('pm clear com.android.chrome'),
                             service.sendCommand('pm clear com.chrome.beta'),

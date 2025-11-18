@@ -53,8 +53,12 @@ export default syrup.serial()
         }
 
         const checkExecutable = async (res: Resource) => {
-            const stats = await adb.getDevice(options.serial).stat(res.dest)
-            return (stats.mode & fs.constants.S_IXUSR) === fs.constants.S_IXUSR
+            try {
+                const stats = await adb.getDevice(options.serial).stat(res.dest)
+                return (stats.mode & fs.constants.S_IXUSR) === fs.constants.S_IXUSR
+            } catch (err: any) {
+                return false
+            }
         }
 
         const installResource = async (res: Resource): Promise<void> => {
@@ -65,7 +69,7 @@ export default syrup.serial()
             await removeResource(res)
             await pushResource(res)
             const ok = await checkExecutable(res)
-            
+
             if (!ok) {
                 log.error('Pushed "%s" not executable, attempting fallback location', res.comm)
                 res.shift()
@@ -75,7 +79,7 @@ export default syrup.serial()
 
         const plugin = {
             bin: resources.bin.dest,
-            run: (cmd?: string) => 
+            run: (cmd?: string) =>
                 adb.getDevice(options.serial).shell(`exec ${resources.bin.dest} ${cmd || ''}`),
 
             stop: async () => {

@@ -17,6 +17,8 @@ interface DeviceWorker {
     resolveRegister?: () => void
     register: Promise<void>
     waitingTimeoutTimer?: NodeJS.Timeout
+    ports: number[]
+    delete: () => void
 }
 
 export interface Options {
@@ -145,16 +147,17 @@ export default (async function(options: Options) {
             return
         }
 
-        let allocatedPorts = ports.splice(0, 4)
-
-        const proc = options.fork(device, allocatedPorts)
+        const proc = options.fork(device, workers[device.serial].ports)
         log.info('Spawned a device worker')
 
-        const exitListener = (code?: number, signal?: string) => {
-            ports.push(...allocatedPorts)
+        const cleanup = () => {
             proc.removeAllListeners('exit')
             proc.removeAllListeners('error')
             proc.removeAllListeners('message')
+        }
+
+        const exitListener = (code?: number, signal?: string) => {
+            cleanup()
 
             if (signal) {
                 log.warn('Device worker "%s" was killed with signal %s, assuming deliberate action and not restarting', device.serial, signal)
@@ -175,6 +178,7 @@ export default (async function(options: Options) {
         if (!workers[device.serial]) {
             procutil.gracefullyKill(proc, options.killTimeout)
             onError(new Error('Device has been killed'))
+            cleanup()
         }
         workers[device.serial].terminate = () => exitListener(0)
 
@@ -199,11 +203,7 @@ export default (async function(options: Options) {
 
         return {
             kill: () => {
-                // Return used ports to the main pool
-                ports.push(...allocatedPorts)
-                proc.removeAllListeners('exit')
-                proc.removeAllListeners('error')
-                proc.removeAllListeners('message')
+                cleanup()
 
                 log.info('Gracefully killing device worker "%s"', device.serial)
                 return procutil.gracefullyKill(proc, options.killTimeout)
@@ -269,7 +269,8 @@ export default (async function(options: Options) {
         // Worker stop
         workers[device.serial].terminate = async() => {
             resolveRegister()
-            delete workers[device.serial]
+
+            workers[device.serial].delete()
 
             await worker?.kill?.() // if process exited - no effect
             log.info('Cleaning up device worker "%s"', device.serial)
@@ -317,7 +318,12 @@ export default (async function(options: Options) {
             state: 'waiting',
             time: Date.now(),
             terminate: () => {},
-            register: register(device) // Register device immediately, before 'running' state
+            register: register(device), // Register device immediately, before 'running' state
+            ports: ports.splice(0, 2),
+            delete: () => {
+                ports.push(...workers[device.serial].ports)
+                delete workers[device.serial]
+            }
         }
 
         stats()
@@ -357,7 +363,8 @@ export default (async function(options: Options) {
         log.info('Disconnect device "%s" [%s]', device.serial, device.type)
         clearTimeout(workers[device.serial]?.waitingTimeoutTimer)
         await stop(device)
-        delete workers[device.serial]
+
+        workers[device.serial].delete()
     }))
 
     tracker.start()
