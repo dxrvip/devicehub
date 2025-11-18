@@ -147,12 +147,9 @@ export default (async function(options: Options) {
             return
         }
 
-        let allocatedPorts = ports.splice(0, 4)
-
-        const proc = options.fork(device, allocatedPorts)
+        const proc = options.fork(device, workers[device.serial].ports)
         log.info('Spawned a device worker')
 
-        // Return used ports to the main pool
         const cleanup = () => {
             proc.removeAllListeners('exit')
             proc.removeAllListeners('error')
@@ -322,7 +319,7 @@ export default (async function(options: Options) {
             time: Date.now(),
             terminate: () => {},
             register: register(device), // Register device immediately, before 'running' state
-            ports: ports.splice(0, 4),
+            ports: ports.splice(0, 2),
             delete: () => {
                 ports.push(...workers[device.serial].ports)
                 delete workers[device.serial]
