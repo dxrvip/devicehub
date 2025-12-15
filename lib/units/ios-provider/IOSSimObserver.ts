@@ -1,20 +1,25 @@
 import EventEmitter from 'node:events'
 import {Simctl} from 'node-simctl'
+import {DeviceInfo} from 'node-simctl/build/lib/subcommands/list.js'
 
-export default class IOSSimObserver extends EventEmitter {
+interface IOSSimEvents {
+    attached: [string]
+    detached: [string]
+}
+
+export default class IOSSimObserver extends EventEmitter<IOSSimEvents> {
     simctl = new Simctl()
 
-    /** @type {Set<string>} state
-     * @description list of UDIDs of booted simulators */
-    state = new Set()
-    listnerInterval
+    /** @description list of UDIDs of booted simulators */
+    state: Set<string> = new Set()
+    listnerInterval: NodeJS.Timeout | undefined
 
     constructor() {
         super()
     }
 
-    async getBootedSimulators() {
-        const devices = await this.simctl.getDevices()
+    async getBootedSimulators(): Promise<string[]> {
+        const devices = await this.simctl.getDevices() as Record<string, DeviceInfo[]>
         if (!devices) {
             return []
         }
@@ -25,7 +30,7 @@ export default class IOSSimObserver extends EventEmitter {
             )
     }
 
-    async processState(sims) {
+    async processState(sims: string[]): Promise<void> {
         for (const prevSim of Array.from(this.state)) {
             if (!sims.includes(prevSim)) {
                 this.state.delete(prevSim)
@@ -41,7 +46,7 @@ export default class IOSSimObserver extends EventEmitter {
         }
     }
 
-    listen = () => {
+    listen = (): void => {
         new Promise(async() => {
             const sims = await this.getBootedSimulators()
             await this.processState(sims)
@@ -49,7 +54,8 @@ export default class IOSSimObserver extends EventEmitter {
         })
     }
 
-    stop() {
+    stop(): void {
         clearTimeout(this.listnerInterval)
     }
 }
+

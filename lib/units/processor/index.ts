@@ -46,17 +46,14 @@ import {
     RotationEvent,
     CapabilitiesMessage,
     ReverseForwardsEvent,
-    SetDeviceDisplay,
     UpdateIosDevice,
     SdkIosVersion,
     SizeIosDevice,
     DeviceTypeMessage,
     DeleteDevice,
-    SetAbsentDisconnectedDevices,
     GetServicesAvailabilityMessage,
-    DeviceRegisteredMessage, GetPresentDevices, DeviceGetIsInOrigin, GetDeadDevices
+    DeviceRegisteredMessage, GetPresentDevices, DeviceGetIsInOrigin, GetDeadDevices, DeviceIosIntroductionMessage
 } from '../../wire/wire.js'
-import {getDeadDevice} from "../../db/models/device/model.js";
 
 interface Options {
     name: string
@@ -141,6 +138,13 @@ export default db.ensureConnectivity(async(options: Options) => {
                 wireutil.pack(DeviceRegisteredMessage, {serial: message.serial})
             ])
             appDealer.send([channel, data])
+        })
+        .on(DeviceIosIntroductionMessage, async(channel, message, data) => {
+            await dbapi.saveIosDeviceInitialState(options.publicIp, message)
+            devDealer.send([
+                message.provider!.channel,
+                wireutil.pack(DeviceRegisteredMessage, {serial: message.serial})
+            ])
         })
         .on(InitializeIosDeviceState, (channel, message, data) => {
             dbapi.initializeIosDeviceState(options.publicIp, message)

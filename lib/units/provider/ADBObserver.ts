@@ -1,7 +1,7 @@
 import EventEmitter from 'events'
 import net, {Socket} from 'net'
 
-export type ADBDeviceType = 'unknown' | 'bootloader' | 'device' | 'recovery' | 'sideload' | 'offline' | 'unauthorized' // https://android.googlesource.com/platform/system/core/+/android-4.4_r1/adb/adb.c#394
+type ADBDeviceType = 'unknown' | 'bootloader' | 'device' | 'recovery' | 'sideload' | 'offline' | 'unauthorized' // https://android.googlesource.com/platform/system/core/+/android-4.4_r1/adb/adb.c#394
 
 interface ADBDevice {
     serial: string
@@ -39,7 +39,7 @@ class ADBObserver extends EventEmitter<ADBEvents> {
     static instance: ADBObserver | null = null
 
     private readonly intervalMs: number = 1000 // Default 1 second polling
-    private readonly healthCheckIntervalMs: number = 10000 // Default 1 minute health check
+    private readonly healthCheckIntervalMs: number = 30000 // Default 30 sec health check
     private readonly maxHealthCheckAttempts: number = 3
 
     private readonly host: string = 'localhost'
@@ -54,8 +54,6 @@ class ADBObserver extends EventEmitter<ADBEvents> {
     private readonly requestTimeoutMs: number = 5000 // 5 second timeout per request
     private readonly initialReconnectDelayMs: number = 100
     private readonly maxReconnectAttempts: number = 8
-
-    private reconnectAttempt: number = 0
 
     private connection: Socket | null = null
     private requestQueue: Array<{
@@ -262,9 +260,8 @@ class ADBObserver extends EventEmitter<ADBEvents> {
                     // Use shell command to check if device is responsive
                     // This is more reliable than get-state
                     // sendADBCommand already has a timeout (requestTimeoutMs)
-                    const res = await this.sendADBCommand('shell:getprop ro.build.version.sdk', serial)
+                    await this.sendADBCommand('shell:getprop ro.build.version.sdk', serial)
 
-                    console.log('RESPONSE:\n', res, '\n', typeof res, res?.length)
                     // Device responded successfully - reset failure tracking
                     if (this.deviceHealthAttempts.has(serial)) {
                         this.deviceHealthAttempts.delete(serial)
@@ -273,7 +270,8 @@ class ADBObserver extends EventEmitter<ADBEvents> {
                     ok++
                 }
                 catch (error: any) {
-                    console.log(error)
+                    console.log(`ADBObserver Healthcheck error: ${error?.message || error}`)
+
                     // Device didn't respond - track failure and potentially reconnect
                     this.handleDeviceHealthCheckFailure(serial, device, now)
                     bad++
@@ -376,7 +374,6 @@ class ADBObserver extends EventEmitter<ADBEvents> {
             }, () => {
                 this.connection = client
                 this.isConnecting = false
-                this.reconnectAttempt = 0 // Reset reconnection counter on successful connection
                 this.setupConnectionHandlers(client)
                 resolve(client)
             })
@@ -706,8 +703,6 @@ class ADBObserver extends EventEmitter<ADBEvents> {
         this.isReconnecting = true
 
         for (let attempt = 0; attempt < this.maxReconnectAttempts; attempt++) {
-            this.reconnectAttempt = attempt + 1
-
             // Calculate exponential backoff delay
             const delay = this.initialReconnectDelayMs * Math.pow(2, attempt)
 
@@ -722,7 +717,6 @@ class ADBObserver extends EventEmitter<ADBEvents> {
             try {
                 // Attempt to create a new connection
                 await this.createConnection()
-                this.reconnectAttempt = 0
                 this.isReconnecting = false
 
                 // Resend the in-flight request if it exists
@@ -742,7 +736,6 @@ class ADBObserver extends EventEmitter<ADBEvents> {
 
         // All reconnection attempts failed
         this.isReconnecting = false
-        this.reconnectAttempt = 0
 
         const error = new Error(`Failed to reconnect to ADB server after ${this.maxReconnectAttempts} attempts`)
         this.emit('error', error)
@@ -781,9 +774,7 @@ class ADBObserver extends EventEmitter<ADBEvents> {
             this.connection = null
         }
 
-        // Reset reconnection state
         this.isReconnecting = false
-        this.reconnectAttempt = 0
 
         // Reject all queued requests (including in-flight one)
         for (const request of this.requestQueue) {
@@ -870,4 +861,4 @@ class ADBObserver extends EventEmitter<ADBEvents> {
 }
 
 export default ADBObserver
-export {ADBDevice, ADBObserver}
+export {ADBObserver, ADBDevice, ADBDeviceType}
