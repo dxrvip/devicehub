@@ -36,6 +36,8 @@ const IGNORED_ERRORS_PATTERN = new RegExp(
 const RUNNER_SCHEME_TV = 'WebDriverAgentRunner_tvOS';
 const LIB_SCHEME_TV = 'WebDriverAgentLib_tvOS';
 
+const REAL_DEVICES_CONFIG_DOCS_LINK = 'https://appium.github.io/appium-xcuitest-driver/latest/preparation/real-device-config/';
+
 const xcodeLog = logger.getLogger('Xcode');
 
 
@@ -44,13 +46,12 @@ export class XcodeBuild {
   xcodebuild;
 
   /**
-   * @param {import('appium-xcode').XcodeVersion} xcodeVersion
-   * @param {any} device
-   * // TODO: make args typed
-   * @param {import('@appium/types').StringRecord} [args={}]
-   * @param {import('@appium/types').AppiumLogger?} [log=null]
+   * @param {import('appium-xcode').XcodeVersion | undefined} xcodeVersion @deprecated Will be removed as no actual usage.
+   * @param {import('./types').AppleDevice} device
+   * @param {import('./types').XcodeBuildArgs} args
+   * @param {import('@appium/types').AppiumLogger | null} [log=null]
    */
-  constructor (xcodeVersion, device, args = {}, log = null) {
+  constructor (xcodeVersion, device, args, log = null) {
     this.xcodeVersion = xcodeVersion;
 
     this.device = device;
@@ -82,6 +83,7 @@ export class XcodeBuild {
     this.launchTimeout = args.launchTimeout;
 
     this.wdaRemotePort = args.wdaRemotePort;
+    this.wdaBindingIP = args.wdaBindingIP;
 
     this.updatedWDABundleId = args.updatedWDABundleId;
     this.derivedDataPath = args.derivedDataPath;
@@ -108,13 +110,20 @@ export class XcodeBuild {
     this.noSessionProxy = noSessionProxy;
 
     if (this.useXctestrunFile) {
-      const deviveInfo = {
-        isRealDevice: this.realDevice,
+      /** @type {import('./utils').DeviceInfo} */
+      const deviceInfo = {
+        isRealDevice: !!this.realDevice,
         udid: this.device.udid,
-        platformVersion: this.platformVersion,
-        platformName: this.platformName
+        platformVersion: this.platformVersion || '',
+        platformName: this.platformName || ''
       };
-      this.xctestrunFilePath = await setXctestrunFile(deviveInfo, this.iosSdkVersion, this.bootstrapPath, this.wdaRemotePort);
+      this.xctestrunFilePath = await setXctestrunFile({
+          deviceInfo,
+          sdkVersion: this.iosSdkVersion || '',
+          bootstrapPath: this.bootstrapPath,
+          wdaRemotePort: this.wdaRemotePort || 8100,
+          wdaBindingIP: this.wdaBindingIP
+        });
       return;
     }
 
@@ -198,8 +207,8 @@ export class XcodeBuild {
    * @returns {Promise<void>}
    */
   async cleanProject () {
-    const libScheme = isTvOS(this.platformName) ? LIB_SCHEME_TV : LIB_SCHEME_IOS;
-    const runnerScheme = isTvOS(this.platformName) ? RUNNER_SCHEME_TV : RUNNER_SCHEME_IOS;
+    const libScheme = isTvOS(this.platformName || '') ? LIB_SCHEME_TV : LIB_SCHEME_IOS;
+    const runnerScheme = isTvOS(this.platformName || '') ? RUNNER_SCHEME_TV : RUNNER_SCHEME_IOS;
 
     for (const scheme of [libScheme, runnerScheme]) {
       this.log.debug(`Cleaning the project scheme '${scheme}' to make sure there are no leftovers from previous installs`);
@@ -247,7 +256,7 @@ export class XcodeBuild {
     if (this.useXctestrunFile && this.xctestrunFilePath) {
       args.push('-xctestrun', this.xctestrunFilePath);
     } else {
-      const runnerScheme = isTvOS(this.platformName) ? RUNNER_SCHEME_TV : RUNNER_SCHEME_IOS;
+      const runnerScheme = isTvOS(this.platformName || '') ? RUNNER_SCHEME_TV : RUNNER_SCHEME_IOS;
       args.push('-project', this.agentPath, '-scheme', runnerScheme);
       if (this.derivedDataPath) {
         args.push('-derivedDataPath', this.derivedDataPath);
@@ -255,14 +264,16 @@ export class XcodeBuild {
     }
     args.push('-destination', `id=${this.device.udid}`);
 
-    const versionMatch = new RegExp(/^(\d+)\.(\d+)/).exec(this.platformVersion);
-    if (versionMatch) {
+    let versionMatch;
+    if (this.platformVersion && (versionMatch = new RegExp(/^(\d+)\.(\d+)/).exec(this.platformVersion))) {
       args.push(
-        `${isTvOS(this.platformName) ? 'TV' : 'IPHONE'}OS_DEPLOYMENT_TARGET=${versionMatch[1]}.${versionMatch[2]}`
+        `${isTvOS(this.platformName || '') ? 'TV' : 'IPHONE'}OS_DEPLOYMENT_TARGET=${versionMatch[1]}.${versionMatch[2]}`
       );
     } else {
-      this.log.warn(`Cannot parse major and minor version numbers from platformVersion "${this.platformVersion}". ` +
-        'Will build for the default platform instead');
+      this.log.warn(
+        `Cannot parse major and minor version numbers from platformVersion "${this.platformVersion}". ` +
+        'Will build for the default platform instead'
+      );
     }
 
     if (this.realDevice) {
@@ -312,6 +323,9 @@ export class XcodeBuild {
     if (this.mjpegServerPort) {
       // https://github.com/appium/WebDriverAgent/pull/105
       env.MJPEG_SERVER_PORT = this.mjpegServerPort;
+    }
+    if (this.wdaBindingIP) {
+      env.USE_IP = this.wdaBindingIP;
     }
     const upgradeTimestamp = await getWDAUpgradeTimestamp();
     if (upgradeTimestamp) {
@@ -378,8 +392,7 @@ export class XcodeBuild {
               ` order to check the Appium server log for build-related error messages.`;
           } else if (this.realDevice) {
             errorMessage += ` Consider checking the WebDriverAgent configuration guide` +
-              ` for real iOS devices at` +
-              ` https://github.com/appium/appium-xcuitest-driver/blob/master/docs/real-device-config.md.`;
+              ` for real iOS devices at ${REAL_DEVICES_CONFIG_DOCS_LINK}.`;
           }
           return reject(new Error(errorMessage));
         }
@@ -412,10 +425,11 @@ export class XcodeBuild {
    */
   async waitForStart (timer) {
     // try to connect once every 0.5 seconds, until `launchTimeout` is up
-    this.log.debug(`Waiting up to ${this.launchTimeout}ms for WebDriverAgent to start`);
+    const timeout = this.launchTimeout || 60000; // Default to 60 seconds if not set
+    this.log.debug(`Waiting up to ${timeout}ms for WebDriverAgent to start`);
     let currentStatus = null;
     try {
-      const retries = Math.trunc(this.launchTimeout / 500);
+      const retries = Math.trunc(timeout / 500);
       await retryInterval(retries, 1000, async () => {
         if (this._didProcessExit) {
           // there has been an error elsewhere and we need to short-circuit
@@ -447,7 +461,7 @@ export class XcodeBuild {
     } catch (err) {
       this.log.debug(err.stack);
       throw new Error(
-        `We were not able to retrieve the /status response from the WebDriverAgent server after ${this.launchTimeout}ms timeout.` +
+        `We were not able to retrieve the /status response from the WebDriverAgent server after ${timeout}ms timeout.` +
         `Try to increase the value of 'appium:wdaLaunchTimeout' capability as a possible workaround.`
       );
     }

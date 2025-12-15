@@ -10,7 +10,7 @@ import { NoSessionProxy } from './no-session-proxy';
 import {
   getWDAUpgradeTimestamp, resetTestProcesses, getPIDsListeningOnPort, BOOTSTRAP_PATH
 } from './utils';
-import XcodeBuild from './xcodebuild';
+import {XcodeBuild} from './xcodebuild';
 import AsyncLock from 'async-lock';
 import { exec } from 'teen_process';
 import { bundleWDASim } from './check-dependencies';
@@ -34,13 +34,15 @@ export class WebDriverAgent {
   /** @type {string} */
   agentPath;
 
+  /** @type {any} @deprecated for removal */
+  idb;
+
   /**
-   * @param {import('appium-xcode').XcodeVersion} xcodeVersion
-   * // TODO: make args typed
-   * @param {import('@appium/types').StringRecord} [args={}]
+   * @param {import('appium-xcode').XcodeVersion | undefined} xcodeVersion @deprecated Will be removed as no actual usage.
+   * @param {import('./types').WebDriverAgentArgs} args
    * @param {import('@appium/types').AppiumLogger?} [log=null]
    */
-  constructor (xcodeVersion, args = {}, log = null) {
+  constructor (xcodeVersion, args, log = null) {
     this.xcodeVersion = xcodeVersion;
 
     this.args = _.clone(args);
@@ -52,7 +54,8 @@ export class WebDriverAgent {
     this.iosSdkVersion = args.iosSdkVersion;
     this.host = args.host;
     this.isRealDevice = !!args.realDevice;
-    this.idb = (args.device || {}).idb;
+    /** @deprecated We'll stop supporting idb */
+    this.idb = args.device.idb;
     this.wdaBundlePath = args.wdaBundlePath;
 
     this.setWDAPaths(args.bootstrapPath, args.agentPath);
@@ -61,7 +64,7 @@ export class WebDriverAgent {
     this.wdaRemotePort = ((this.isRealDevice ? args.wdaRemotePort : null) ?? args.wdaLocalPort)
       || WDA_AGENT_PORT;
     this.wdaBaseUrl = args.wdaBaseUrl || WDA_BASE_URL;
-
+    this.wdaBindingIP = args.wdaBindingIP;
     this.prebuildWDA = args.prebuildWDA;
 
     // this.args.webDriverAgentUrl guiarantees the capabilities acually
@@ -105,6 +108,7 @@ export class WebDriverAgent {
         updatedWDABundleId: this.updatedWDABundleId,
         launchTimeout: this.wdaLaunchTimeout,
         wdaRemotePort: this.wdaRemotePort,
+        wdaBindingIP: this.wdaBindingIP,
         useXctestrunFile: this.useXctestrunFile,
         derivedDataPath: args.derivedDataPath,
         mjpegServerPort: this.mjpegServerPort,
@@ -121,7 +125,7 @@ export class WebDriverAgent {
   get canSkipXcodebuild () {
     // Use this.args.webDriverAgentUrl to guarantee
     // the capabilities set gave the `appium:webDriverAgentUrl`.
-    return this.usePreinstalledWDA || this.args.webDriverAgentUrl;
+    return this.usePreinstalledWDA || !!this.args.webDriverAgentUrl;
   }
 
   /**
@@ -391,12 +395,15 @@ export class WebDriverAgent {
     if (this.mjpegServerPort) {
       xctestEnv.MJPEG_SERVER_PORT = this.mjpegServerPort;
     }
+    if (this.wdaBindingIP) {
+      xctestEnv.USE_IP = this.wdaBindingIP;
+    }
     this.log.info('Launching WebDriverAgent on the device without xcodebuild');
     if (this.isRealDevice) {
       // Current method to launch WDA process can be done via 'xcrun devicectl',
       // but it has limitation about the WDA preinstalled package.
       // https://github.com/appium/appium/issues/19206#issuecomment-2014182674
-      if (util.compareVersions(this.platformVersion, '>=', '17.0')) {
+      if (this.platformVersion && util.compareVersions(this.platformVersion, '>=', '17.0')) {
         await this._launchViaDevicectl({env: xctestEnv});
       } else {
         this.xctestApiClient = new Xctest(this.device.udid, this.bundleIdForXctest, null, {env: xctestEnv});
@@ -417,7 +424,7 @@ export class WebDriverAgent {
     let status;
     try {
       status = await this.getStatus(this.wdaLaunchTimeout);
-    } catch (err) {
+    } catch {
       throw new Error(
         `Failed to start the preinstalled WebDriverAgent in ${this.wdaLaunchTimeout} ms. ` +
         `The WebDriverAgent might not be properly built or the device might be locked. ` +
@@ -502,6 +509,7 @@ export class WebDriverAgent {
   }
 
   /**
+   * @deprecated We'll stop supporting idb. Deprecated for removal.
    * @returns {Promise<void>}
    */
   async startWithIDB () {
@@ -513,6 +521,9 @@ export class WebDriverAgent {
     };
     if (this.mjpegServerPort) {
       env.MJPEG_SERVER_PORT = this.mjpegServerPort;
+    }
+    if (this.wdaBindingIP) {
+      env.USE_IP = this.wdaBindingIP;
     }
 
     return await this.idb.runXCUITest(wdaBundleId, wdaBundleId, testBundleId, {env});
@@ -533,6 +544,7 @@ export class WebDriverAgent {
   }
 
   /**
+   * @deprecated We'll stop using idb
    * @returns {Promise<{wdaBundleId: string, testBundleId: string, wdaBundlePath: string}>}
    */
   async prepareWDA () {
@@ -579,12 +591,16 @@ export class WebDriverAgent {
   setupProxies (sessionId) {
     const proxyOpts = {
       log: this.log,
-      server: this.url.hostname,
-      port: this.url.port,
+      server: this.url.hostname ?? undefined,
+      port: parseInt(this.url.port ?? '', 10) || undefined,
       base: this.basePath,
       timeout: this.wdaConnectionTimeout,
       keepAlive: true,
+      scheme: this.url.protocol ? this.url.protocol.replace(':', '') : 'http',
     };
+    if (this.args.reqBasePath) {
+      proxyOpts.reqBasePath = this.args.reqBasePath;
+    }
 
     this.jwproxy = new JWProxy(proxyOpts);
     this.jwproxy.sessionId = sessionId;
@@ -627,7 +643,7 @@ export class WebDriverAgent {
     if (!this.args.webDriverAgentUrl) {
       // if we populated the url ourselves (during `setupCaching` call, for instance)
       // then clean that up. If the url was supplied, we want to keep it
-      this.webDriverAgentUrl = null;
+      this.webDriverAgentUrl = undefined;
     }
   }
 
@@ -641,7 +657,7 @@ export class WebDriverAgent {
       } else {
         const port = this.wdaLocalPort || WDA_AGENT_PORT;
         const {protocol, hostname} = url.parse(this.wdaBaseUrl || WDA_BASE_URL);
-        this._url = url.parse(`${protocol}//${hostname}:${port}`);
+        this._url = url.parse(`${protocol}//${this.wdaBindingIP || hostname}:${port}`);
       }
     }
     return this._url;

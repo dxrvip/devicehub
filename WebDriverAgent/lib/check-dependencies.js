@@ -1,9 +1,6 @@
 import { fs } from '@appium/support';
-import _ from 'lodash';
 import { exec } from 'teen_process';
-import path from 'path';
-import XcodeBuild from './xcodebuild';
-import xcode from 'appium-xcode';
+import path from 'node:path';
 import {
   WDA_SCHEME, SDK_SIMULATOR, WDA_RUNNER_APP
 } from './constants';
@@ -22,7 +19,6 @@ async function buildWDASim () {
   await exec('xcodebuild', args);
 }
 
-// eslint-disable-next-line require-await
 export async function checkForDependencies () {
   log.debug('Dependencies are up to date');
   return false;
@@ -30,14 +26,10 @@ export async function checkForDependencies () {
 
 /**
  *
- * @param {XcodeBuild} xcodebuild
+ * @param {import('./xcodebuild').XcodeBuild} xcodebuild
  * @returns {Promise<string>}
  */
 export async function bundleWDASim (xcodebuild) {
-  if (xcodebuild && !_.isFunction(xcodebuild.retrieveDerivedDataPath)) {
-    xcodebuild = new XcodeBuild(/** @type {import('appium-xcode').XcodeVersion} */ (await xcode.getVersion(true)), {});
-  }
-
   const derivedDataPath = await xcodebuild.retrieveDerivedDataPath();
   if (!derivedDataPath) {
     throw new Error('Cannot retrieve the path to the Xcode derived data folder');

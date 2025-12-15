@@ -6,7 +6,12 @@ import _ from 'lodash';
 import sinon from 'sinon';
 
 const fakeConstructorArgs = {
-  device: 'some sim',
+  device: {
+    udid: 'some-sim-udid',
+    simctl: {},
+    devicectl: {},
+    idb: null
+  },
   platformVersion: '9',
   host: 'me',
   port: '5000',
@@ -71,11 +76,13 @@ describe('launch', function () {
     await agent.launch('sessionId').should.eventually.eql({build: 'data'});
     agent.url.href.should.eql(override);
     agent.jwproxy.server.should.eql('mockurl');
-    agent.jwproxy.port.should.eql('8100');
+    agent.jwproxy.port.should.eql(8100);
     agent.jwproxy.base.should.eql('');
+    agent.jwproxy.scheme.should.eql('http');
     agent.noSessionProxy.server.should.eql('mockurl');
-    agent.noSessionProxy.port.should.eql('8100');
+    agent.noSessionProxy.port.should.eql(8100);
     agent.noSessionProxy.base.should.eql('');
+    agent.noSessionProxy.scheme.should.eql('http');
     wdaStub.reset();
   });
 });
@@ -97,11 +104,13 @@ describe('use wda proxy url', function () {
     agent.url.hostname.should.eql('127.0.0.1');
     agent.url.path.should.eql('/aabbccdd');
     agent.jwproxy.server.should.eql('127.0.0.1');
-    agent.jwproxy.port.should.eql('8100');
+    agent.jwproxy.port.should.eql(8100);
     agent.jwproxy.base.should.eql('/aabbccdd');
+    agent.jwproxy.scheme.should.eql('http');
     agent.noSessionProxy.server.should.eql('127.0.0.1');
-    agent.noSessionProxy.port.should.eql('8100');
+    agent.noSessionProxy.port.should.eql(8100);
     agent.noSessionProxy.base.should.eql('/aabbccdd');
+    agent.noSessionProxy.scheme.should.eql('http');
   });
 });
 
@@ -110,6 +119,9 @@ describe('get url', function () {
     const args = Object.assign({}, fakeConstructorArgs);
     const agent = new WebDriverAgent({}, args);
     agent.url.href.should.eql('http://127.0.0.1:8100/');
+    agent.setupProxies('mysession');
+    agent.jwproxy.scheme.should.eql('http');
+    agent.noSessionProxy.scheme.should.eql('http');
   });
   it('should use default WDA listening url with emply base url', function () {
     const wdaLocalPort = '9100';
@@ -121,6 +133,9 @@ describe('get url', function () {
 
     const agent = new WebDriverAgent({}, args);
     agent.url.href.should.eql('http://127.0.0.1:9100/');
+    agent.setupProxies('mysession');
+    agent.jwproxy.scheme.should.eql('http');
+    agent.noSessionProxy.scheme.should.eql('http');
   });
   it('should use customised WDA listening url', function () {
     const wdaLocalPort = '9100';
@@ -132,6 +147,9 @@ describe('get url', function () {
 
     const agent = new WebDriverAgent({}, args);
     agent.url.href.should.eql('http://mockurl:9100/');
+    agent.setupProxies('mysession');
+    agent.jwproxy.scheme.should.eql('http');
+    agent.noSessionProxy.scheme.should.eql('http');
   });
   it('should use customised WDA listening url with slash', function () {
     const wdaLocalPort = '9100';
@@ -143,6 +161,9 @@ describe('get url', function () {
 
     const agent = new WebDriverAgent({}, args);
     agent.url.href.should.eql('http://mockurl:9100/');
+    agent.setupProxies('mysession');
+    agent.jwproxy.scheme.should.eql('http');
+    agent.noSessionProxy.scheme.should.eql('http');
   });
   it('should use the given webDriverAgentUrl and ignore other params', function () {
     const args = Object.assign({}, fakeConstructorArgs);
@@ -153,6 +174,14 @@ describe('get url', function () {
     const agent = new WebDriverAgent({}, args);
     agent.url.href.should.eql('https://127.0.0.1:8100/');
   });
+  it('should set scheme to https for https webDriverAgentUrl', function () {
+    const args = Object.assign({}, fakeConstructorArgs);
+    args.webDriverAgentUrl = 'https://127.0.0.1:8100/';
+    const agent = new WebDriverAgent({}, args);
+    agent.setupProxies('mysession');
+    agent.jwproxy.scheme.should.eql('https');
+    agent.noSessionProxy.scheme.should.eql('https');
+  });
 });
 
 describe('setupCaching()', function () {
@@ -162,7 +191,7 @@ describe('setupCaching()', function () {
   const getTimestampStub = sinon.stub(utils, 'getWDAUpgradeTimestamp');
 
   beforeEach(function () {
-    wda = new WebDriverAgent('1');
+    wda = new WebDriverAgent('1', fakeConstructorArgs);
     wdaStub = sinon.stub(wda, 'getStatus');
     wdaStubUninstall = sinon.stub(wda, 'uninstall');
   });
@@ -225,7 +254,7 @@ describe('setupCaching()', function () {
   });
 
   it('should not call uninstall since bundle id is equal to updatedWDABundleId capability', async function () {
-    wda = new WebDriverAgent('1', { updatedWDABundleId: 'com.example.WebDriverAgent' });
+    wda = new WebDriverAgent('1', { ...fakeConstructorArgs, updatedWDABundleId: 'com.example.WebDriverAgent' });
     wdaStub = sinon.stub(wda, 'getStatus');
     wdaStubUninstall = sinon.stub(wda, 'uninstall');
 
