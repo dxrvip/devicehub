@@ -212,8 +212,8 @@ class Logger {
 
 const globalLogger = new Logger()
 
-// const consoleLogger = createLogger('console')
-// console.log = consoleLogger.info.bind(consoleLogger)
-// console.error = consoleLogger.error.bind(consoleLogger)
+const consoleLogger = createLogger('console')
+console.log = consoleLogger.info.bind(consoleLogger)
+console.error = consoleLogger.error.bind(consoleLogger)
 
 export default globalLogger
