@@ -192,7 +192,7 @@ export class ProcessManager<TContext = any, TResources = any> {
 
                 // Handle exit errors with restart logic
                 if (err instanceof procutil.ExitError) {
-                    this.log.error('Process "%s" died with code %s', id, err.code)
+                    this.log.error('Process "%s" died with code %s', id, (err as any)?.code)
                     this.log.info('Restarting process "%s" in 2 seconds', id)
 
                     await new Promise(r => setTimeout(r, 2000))

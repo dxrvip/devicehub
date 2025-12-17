@@ -87,21 +87,21 @@ export default async (options: Options): Promise<void> => {
     let espTimer: NodeJS.Timeout
     const espObserver = async() => {
         // Listen for iMouseDevices
-        const newDevices = await Esp32Touch.listPorts()
+        const newDevices: PortInfo[] = await Esp32Touch.listPorts() as any
         const diffAdd = _.differenceBy(newDevices, curEsp32, 'path')
         const diffRemove = _.differenceBy(curEsp32, newDevices, 'path')
 
-        diffAdd.forEach((dev) => {
+        diffAdd.forEach((dev: PortInfo) => {
             log.info(
                 `Added ESP32 to the pool. path=%s, productId=%s, manufacturer=%s`,
-                dev.path, dev.productId, dev.manufacturer
+                dev?.path, dev?.productId, dev?.manufacturer
             )
         })
 
-        diffRemove.forEach((dev) => {
+        diffRemove.forEach((dev: PortInfo) => {
             log.info(
                 `Removed ESP32 from the pool. path=%s, productId=%s, manufacturer=%s`,
-                dev.path, dev.productId, dev.manufacturer
+                dev?.path, dev?.productId, dev?.manufacturer
             )
         })
 
