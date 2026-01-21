@@ -3,7 +3,8 @@
   "compilerOptions": {
     "allowJs": false,
     "checkJs": false,
-    "noImplicitAny": false
+    "noImplicitAny": false,
+    "skipLibCheck": true
   },
   "include": ["./lib/**/*.ts"],
   "exclude": ["./lib/**/*.js"]

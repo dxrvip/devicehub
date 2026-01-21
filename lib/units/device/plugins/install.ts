@@ -1,9 +1,7 @@
 import fs from 'fs/promises'
 import util from 'util'
 import syrup from '@devicefarmer/stf-syrup'
-import Bluebird from 'bluebird'
 import logger from '../../../util/logger.js'
-import wire from '../../../wire/index.js'
 import wireutil from '../../../wire/util.js'
 import * as promiseutil from '../../../util/promiseutil.js'
 import {Utils} from '@u4/adbkit'
@@ -11,30 +9,41 @@ import adb from '../support/adb.js'
 import router from '../../base-device/support/router.js'
 import push from '../../base-device/support/push.js'
 import storage from '../../base-device/support/storage.js'
-import {InstallMessage, UninstallMessage} from '../../../wire/wire.js'
+import {InstallMessage, InstallResultMessage, UninstallMessage} from '../../../wire/wire.js'
 
-// @ts-ignore
-const readAll = async(stream) => Utils.readAll(stream)
+interface InstallOptions {
+    serial: string
+    [key: string]: any
+}
+
+interface Manifest {
+    package: string
+    application: {
+        launcherActivities: any[]
+        [key: string]: any
+    }
+    [key: string]: any
+}
 
 export default syrup.serial()
     .dependency(adb)
     .dependency(router)
     .dependency(push)
     .dependency(storage)
-    .define(function(options, adb, router, push, storage) {
+    .define((options: InstallOptions, adb: any, router: any, push: any, storage: any) => {
         const log = logger.createLogger('device:plugins:install')
         const reply = wireutil.reply(options.serial)
 
-        router.on(InstallMessage, async(channel, message) => {
-            const manifest = JSON.parse(message.manifest)
+        router.on(InstallMessage, async (channel: string, message: any) => {
+            const manifest: Manifest = JSON.parse(message.manifest)
             const pkg = manifest.package
-            const installFlags = message.installFlags
-            const isApi = message.isApi
-            const jwt = message.jwt
+            const installFlags: string[] = message.installFlags
+            const isApi: boolean = message.isApi
+            const jwt: string = message.jwt
 
             log.info('Installing package "%s" from "%s"', pkg, message.href)
 
-            const sendProgress = (data, progress) => {
+            const sendProgress = (data: string, progress: number): void => {
                 if (!isApi) {
                     push.send([
                         channel,
@@ -43,10 +52,7 @@ export default syrup.serial()
                 }
             }
 
-            /**
-             * @returns {Promise<string>}
-             */
-            const pushApp = async(channel) => {
+            const pushApp = async (channel: string): Promise<string | undefined> => {
                 try {
                     const {path, cleanup} = await storage.download(message.href, channel, jwt)
                     const stats = await fs.stat(path)
@@ -58,8 +64,8 @@ export default syrup.serial()
                     const transfer = await adb.getDevice(options.serial)
                         .push(path, target, 0o755)
 
-                    let transferError
-                    transfer.on('error', (error) => transferError = error) // work?
+                    let transferError: Error | undefined
+                    transfer.on('error', (error: Error) => transferError = error)
 
                     await transfer.waitForEnd()
                     if (transferError) {
@@ -86,20 +92,20 @@ export default syrup.serial()
 
                         return target
                     }
-                    catch (/** @type {any}*/error) {
+                    catch (error: any) {
                         await cleanup()
                         log.error(`Failed to verify pushed file: ${error?.message || error}`)
                     }
                 }
-                catch (err) {
-                    log.error('Pushing file on device failed:', err)
+                catch (err: any) {
+                    log.error('Pushing file on device failed: %s', err)
                 }
             }
 
-            const install = async(installCmd) => {
+            const install = async (installCmd: string, attempt = 0): Promise<void> => {
                 try {
                     const r = await adb.getDevice(options.serial).shell(installCmd)
-                    const buffer = await readAll(r)
+                    const buffer = await Utils.readAll(r)
                     const result = buffer.toString()
                     log.info('Installing result ' + result)
                     if (result.includes('Success')) {
@@ -109,28 +115,42 @@ export default syrup.serial()
                         ])
                         push.send([
                             channel,
-                            wireutil.envelope(new wire.InstallResultMessage(options.serial, 'Installed successfully'))
+                            wireutil.pack(InstallResultMessage, {
+                                serial: options.serial,
+                                result: 'Installed successfully'
+                            })
                         ])
                     }
                     else {
                         if (result.includes('INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES') || result.includes('INSTALL_FAILED_VERSION_DOWNGRADE')) {
+                            if (attempt) {
+                                throw new Error(result)
+                            }
+
                             log.info('Uninstalling "%s" first due to inconsistent certificates', pkg)
-                            adb.getDevice(options.serial).uninstall(pkg)
-                                .then(() => adb.getDevice(options.serial).shell(installCmd))
+                            await adb.getDevice(options.serial).uninstall(pkg)
+                            return install(installCmd, 1)
                         }
                         else {
                             log.error('Tried to install package "%s", got "%s"', pkg, result)
+
                             push.send([
                                 channel,
                                 reply.fail(result)
                             ])
+
                             push.send([
                                 channel,
-                                wireutil.envelope(new wire.InstallResultMessage(options.serial, `Tried to install package ${pkg}, got ${result}`))
+                                wireutil.pack(InstallResultMessage, {
+                                    serial: options.serial,
+                                    result: `Tried to install package ${pkg}, got ${result}`
+                                })
                             ])
+
                             throw new Error(result)
                         }
                     }
+
                     if (message.launch) {
                         if (manifest.application.launcherActivities.length) {
                             // According to the AndroidManifest.xml documentation the dot is
@@ -142,7 +162,9 @@ export default syrup.serial()
                                 category: ['android.intent.category.LAUNCHER'],
                                 flags: 0x10200000
                             }
+
                             log.info('Launching activity with action "%s" on component "%s"', launchActivity.action, launchActivity.component)
+
                             // Progress 90%
                             sendProgress('launching_app', 90)
 
@@ -153,7 +175,7 @@ export default syrup.serial()
                         }
                     }
                 }
-                catch (err) {
+                catch (err: any) {
                     log.error('Error while installation \n')
                     log.error(err)
                     throw err
@@ -174,15 +196,15 @@ export default syrup.serial()
                 log.info('Install command: ' + installCmd)
                 sendProgress('installing_app', 50)
 
-
                 await promiseutil.periodicNotify(
                     install(installCmd),
                     250
                 )
             }
-            catch (err) {
-                if (err instanceof Bluebird.TimeoutError) {
-                    log.error('Installation of package "%s" failed', pkg, err.stack)
+            catch (err: any) {
+                // Check for timeout-like errors
+                if (err?.name === 'TimeoutError' || err?.message?.includes('timeout')) {
+                    log.error('Installation of package "%s" failed: %s', pkg, err.stack)
                     push.send([
                         channel,
                         reply.fail('INSTALL_ERROR_TIMEOUT')
@@ -190,7 +212,7 @@ export default syrup.serial()
                     return
                 }
 
-                log.error('Installation of package "%s" failed', pkg, err.stack)
+                log.error('Installation of package "%s" failed: %s', pkg, err)
                 push.send([
                     channel,
                     reply.fail('INSTALL_ERROR_UNKNOWN')
@@ -198,7 +220,7 @@ export default syrup.serial()
             }
         })
 
-        router.on(UninstallMessage, async(channel, message) => {
+        router.on(UninstallMessage, async (channel: string, message: any) => {
             log.info('Uninstalling "%s"', message.packageName)
             try {
                 await adb.getDevice(options.serial).uninstall(message.packageName)
@@ -207,8 +229,8 @@ export default syrup.serial()
                     reply.okay('success')
                 ])
             }
-            catch (err) {
-                log.error('Uninstallation failed', err.stack)
+            catch (err: any) {
+                log.error('Uninstallation failed: %s', err)
                 push.send([
                     channel,
                     reply.fail('fail')
