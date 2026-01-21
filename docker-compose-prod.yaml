@@ -150,7 +150,7 @@ services:
         container_name: devicehub-storage-plugin-apk
         env_file:
             - scripts/variables.env
-        command: stf storage-plugin-apk --port 3000 --storage-url http://devicehub-storage-temp/ --secret=${STF_SECRET}
+        command: stf storage-plugin-apk --port 3000 --storage-url http://devicehub-storage-temp:3000/ --secret=${STF_SECRET}
         depends_on:
             devicehub-migrate:
                 condition: service_completed_successfully
@@ -163,7 +163,7 @@ services:
         container_name: devicehub-storage-plugin-image
         env_file:
             - scripts/variables.env
-        command: stf storage-plugin-image --port 3000 --storage-url https://${STF_DOMAIN}:${STF_PORT}/ --secret=${STF_SECRET}
+        command: stf storage-plugin-image --port 3000 --storage-url http://devicehub-storage-temp:3000/ --secret=${STF_SECRET}
         depends_on:
             devicehub-migrate:
                 condition: service_completed_successfully
@@ -223,7 +223,7 @@ services:
         container_name: devicehub-websocket
         env_file:
             - scripts/variables.env
-        command: stf websocket --port 3000 --storage-url https://${STF_DOMAIN}:${STF_PORT}/ --connect-sub tcp://devicehub-triproxy-app:7150 --connect-push tcp://devicehub-triproxy-app:7170 --connect-sub-dev tcp://devicehub-triproxy-dev:7250 --connect-push-dev tcp://devicehub-triproxy-dev:7270 --secret=${STF_SECRET}
+        command: stf websocket --port 3000 --storage-url http://devicehub-storage-temp:3000/ --connect-sub tcp://devicehub-triproxy-app:7150 --connect-push tcp://devicehub-triproxy-app:7170 --connect-sub-dev tcp://devicehub-triproxy-dev:7250 --connect-push-dev tcp://devicehub-triproxy-dev:7270 --secret=${STF_SECRET}
         depends_on:
             devicehub-migrate:
                 condition: service_completed_successfully
@@ -270,7 +270,7 @@ services:
             adbd:
                 condition: service_healthy
         restart: unless-stopped
-        command: stf provider --name devicehub-provider --adb-host adbd --no-cleanup --connect-sub tcp://devicehub-triproxy-dev:7250 --connect-push tcp://devicehub-triproxy-dev:7270 --storage-url https://${STF_DOMAIN}:${STF_PORT}/ --public-ip ${STF_DOMAIN} --min-port=12010 --max-port=12100 --heartbeat-interval 10000 --screen-ws-url-pattern "wss://${STF_DOMAIN}:${STF_PORT}/d/devicehub-provider/<%= publicPort %>/" --secret=${STF_SECRET}
+        command: stf provider --name devicehub-provider --adb-host adbd --no-cleanup --connect-sub tcp://devicehub-triproxy-dev:7250 --connect-push tcp://devicehub-triproxy-dev:7270 --storage-url http://devicehub-storage-plugin-apk:3000/ --public-ip ${STF_DOMAIN} --min-port=12010 --max-port=12100 --heartbeat-interval 10000 --screen-ws-url-pattern "wss://${STF_DOMAIN}:${STF_PORT}/d/devicehub-provider/<%= publicPort %>/" --secret=${STF_SECRET}
         networks:
             devicehub:
     devicehub-ssl:

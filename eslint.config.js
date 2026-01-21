@@ -126,7 +126,7 @@ export default tseslint.config(
             'no-useless-call': 2,
             'no-useless-concat': 2,
             'no-void': 2,
-            'no-warning-comments': [1, {terms: ['todo', 'fixme', '@todo', '@fixme']}],
+            'no-warning-comments': 0,
             'no-with': 2,
             radix: 1,
             'vars-on-top': 0,

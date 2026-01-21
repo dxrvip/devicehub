@@ -1,23 +1,28 @@
 import logger from '../../util/logger.js'
-import wire from '../../wire/index.js'
 import wireutil from '../../wire/util.js'
 import {WireRouter} from '../../wire/router.js'
-import * as procutil from '../../util/procutil.js'
 import lifecycle from '../../util/lifecycle.js'
 import srv from '../../util/srv.js'
 import * as zmqutil from '../../util/zmqutil.js'
 import {ChildProcess} from 'node:child_process'
 import ADBObserver, {ADBDevice} from './ADBObserver.js'
-import { DeviceRegisteredMessage } from '../../wire/wire.ts'
+import {
+    DeviceRegisteredMessage,
+    DeviceAbsentMessage,
+    DeviceIntroductionMessage,
+    ProviderMessage,
+    DeviceStatusMessage
+} from '../../wire/wire.js'
+import {ProcessManager, ResourcePool} from '../../util/ProcessManager.js'
 
-interface DeviceWorker {
-    state: 'waiting' | 'running'
-    time: number
-    terminate: () => Promise<void> | void
+// Device-specific context for process management
+interface DeviceContext {
+    device: ADBDevice
     resolveRegister?: () => void
     register: Promise<void>
-    waitingTimeoutTimer?: NodeJS.Timeout
 }
+
+type DeviceHandler = (device: ADBDevice, oldType?: ADBDevice['type']) => any | Promise<any>
 
 export interface Options {
     name: string
@@ -31,12 +36,17 @@ export interface Options {
         push: string[]
         sub: string[]
     }
-    filter: (device: ADBDevice) => boolean
-    fork: (device: ADBDevice, ports: number[]) => ChildProcess
+    filter: (serial: string) => boolean
+    fork: (serial: string, ports: number[]) => ChildProcess
 }
 
-export default (async function(options: Options) {
+export default async (options: Options): Promise<void> => {
     const log = logger.createLogger('provider')
+
+    // Startup timeout for device process
+    const STARTUP_TIMEOUT_MS = 10 * 60 * 1000
+    const BASE_DELAY = 10_000
+    const RESOURCE_ALLOCATION_COUNT = 2
 
     // Check whether the ipv4 address contains a port indication
     if (options.adbHost.includes(':')) {
@@ -44,13 +54,11 @@ export default (async function(options: Options) {
         lifecycle.fatal()
     }
 
-    const workers: Record<string, DeviceWorker> = {}
-
     const solo = wireutil.makePrivateChannel()
 
     // To make sure that we always bind the same type of service to the same
     // port, we must ensure that we allocate ports in fixed groups.
-    let ports = options.ports.slice(0, options.ports.length - options.ports.length % 4)
+    options.ports = options.ports.slice(0, options.ports.length - options.ports.length % RESOURCE_ALLOCATION_COUNT)
 
     // Output
     const push = zmqutil.socket('push')
@@ -79,30 +87,76 @@ export default (async function(options: Options) {
             })
         }))
 
-        ;[solo].forEach(function(channel) {
-            log.info('Subscribing to permanent channel "%s"', channel)
-            sub.subscribe(channel)
-        })
-
-        sub.on('message', new WireRouter()
-            .on(DeviceRegisteredMessage, (channel, message: {serial: string}) => {
-                if (workers[message.serial]?.resolveRegister) {
-                    workers[message.serial].resolveRegister!()
-                    delete workers[message.serial]?.resolveRegister
-                }
-            })
-            .handler()
-        )
+        log.info('Subscribing to permanent channel "%s"', solo)
+        sub.subscribe(solo)
     }
     catch (err) {
         log.fatal('Unable to connect to sub endpoint: %s', err)
         lifecycle.fatal()
     }
 
+    // Resource pool for port allocation
+    const portPool = new ResourcePool<number>(options.ports)
+
+    const processManager = new ProcessManager<DeviceContext, number>({
+        spawn: (id, context, resources) => {
+            log.info('Spawning device process "%s" with ports [%s]', id, resources.join(', '))
+            return options.fork(id, resources)
+        },
+        onReady: (id) => {
+            log.info('Device process "%s" is ready', id)
+        },
+        onError: (id, context, error) => {
+            log.error('Device process "%s" error: %s', id, error.message)
+        },
+        onCleanup: (id, context) => {
+            // Resolve register if pending
+            context.resolveRegister?.()
+
+            // Tell others the device is gone
+            push.send([
+                wireutil.global,
+                wireutil.pack(DeviceAbsentMessage, { serial: id })
+            ])
+        }
+    }, {
+        killTimeout: options.killTimeout,
+        healthCheckConfig: {
+            startupTimeoutMs: STARTUP_TIMEOUT_MS
+        },
+        resourcePool: portPool
+    })
+
+    // Handle device registration messages
+    sub.on('message', new WireRouter()
+        .on(DeviceRegisteredMessage, (channel, message: {serial: string}) => {
+            const process = processManager.get(message.serial)
+            process?.context?.resolveRegister?.()
+        })
+        .handler()
+    )
+
+    let statsTimer: NodeJS.Timeout
+    const stats = (twice = true) => {
+        const processStats = processManager.getStats()
+
+        log.info(`Providing ${processStats.running.length} of ${processStats.total} device(s); starting: [${
+            processStats.starting.join(', ')
+        }], waiting: [${
+            processStats.waiting.join(', ')
+        }]`)
+        log.info(`Providing all ${processStats.total} of ${tracker.count} device(s)`)
+
+        if (twice) {
+            clearTimeout(statsTimer)
+            statsTimer = setTimeout(stats, BASE_DELAY, false)
+        }
+    }
+
     // Helper for ignoring unwanted devices
-    const filterDevice = (listener: (device: ADBDevice, oldType?: ADBDevice['type']) => any | Promise<any>) =>
-        ((device: ADBDevice, oldType?: ADBDevice['type']) => {
-            if (device.serial === '????????????') {
+    const filterDevice = (listener: DeviceHandler) => (
+        (device: ADBDevice, oldType?: ADBDevice['type']) => {
+            if (device.serial === '????????????' || !device.serial?.trim()) {
                 log.warn('ADB lists a weird device: "%s"', device.serial)
                 return false
             }
@@ -110,190 +164,102 @@ export default (async function(options: Options) {
                 log.info('Filtered out remote device "%s", use --allow-remote to override', device.serial)
                 return false
             }
-            if (options.filter && !options.filter(device)) {
+            if (options.filter && !options.filter(device.serial)) {
                 log.info('Filtered out device "%s"', device.serial)
                 return false
             }
             return listener(device, oldType)
-        }) as (device: ADBDevice, oldType?: ADBDevice['type']) => any | Promise<any>
-
-    const stop = async(device: ADBDevice) => {
-        if (workers[device.serial]) {
-            log.info('Shutting down device worker "%s" [%s]', device.serial, device.type)
-            return workers[device.serial].terminate()
         }
-    }
+    )
 
-    const register = (device: ADBDevice) => new Promise<void>(async(resolve) =>{
-        log.info('Registering device')
-
-        // Tell others we found a device
-        push.send([
-            wireutil.global,
-            wireutil.envelope(new wire.DeviceIntroductionMessage(device.serial, wireutil.toDeviceStatus(device.type) || 1, new wire.ProviderMessage(solo, options.name), options.deviceType))
-        ])
-
-        process.nextTick(() => { // after creating workers[device.serial] obj
-            if (workers[device.serial]) {
-                workers[device.serial].resolveRegister = () => resolve()
-            }
-        })
-    })
-
-    const spawn = (device: ADBDevice, onReady: () => Promise<any> | any, onError: (error: any) => Promise<any> | any) => {
-        if (!workers[device.serial]) { // when device disconnected - stop restart loop
-            return
-        }
-
-        let allocatedPorts = ports.splice(0, 4)
-
-        const proc = options.fork(device, allocatedPorts)
-        log.info('Spawned a device worker')
-
-        const exitListener = (code?: number, signal?: string) => {
-            ports.push(...allocatedPorts)
-            proc.removeAllListeners('exit')
-            proc.removeAllListeners('error')
-            proc.removeAllListeners('message')
-
-            if (signal) {
-                log.warn('Device worker "%s" was killed with signal %s, assuming deliberate action and not restarting', device.serial, signal)
-
-                if (workers[device.serial].state === 'running') {
-                    workers[device.serial].terminate()
-                }
-                return
-            }
-
-            if (code === 0) {
-                log.info('Device worker "%s" stopped cleanly', device.serial)
-            }
-
-            onError(new procutil.ExitError(code))
-        }
-
-        if (!workers[device.serial]) {
-            procutil.gracefullyKill(proc, options.killTimeout)
-            onError(new Error('Device has been killed'))
-        }
-        workers[device.serial].terminate = () => exitListener(0)
-
-        const errorListener = (err: any) => {
-            log.error('Device worker "%s" had an error: %s', device.serial, err.message)
-            onError(err)
-        }
-
-        const messageListener = (message: string) => {
-            if (message !== 'ready') {
-                log.warn('Unknown message from device worker "%s": "%s"', device.serial, message)
-                return
-            }
-
-            onReady()
-            proc.removeListener('message', messageListener)
-        }
-
-        proc.on('exit', exitListener)
-        proc.on('error', errorListener)
-        proc.on('message', messageListener)
-
-        return {
-            kill: () => {
-                // Return used ports to the main pool
-                ports.push(...allocatedPorts)
-                proc.removeAllListeners('exit')
-                proc.removeAllListeners('error')
-                proc.removeAllListeners('message')
-
-                log.info('Gracefully killing device worker "%s"', device.serial)
-                return procutil.gracefullyKill(proc, options.killTimeout)
-            }
-        }
-    }
-
-    const work = async(device: ADBDevice) => {
-        if (!workers[device.serial]) { // when device disconnected - stop restart loop
-            return
-        }
-
-        log.info('Starting to work for device "%s"', device.serial)
-        let resolveReady: () => void
-        let rejectReady: () => void
-
-        const ready = new Promise<void>((resolve, reject) => {
-            resolveReady = resolve
-            rejectReady = reject
-        })
-        const resolveRegister = () => {
-            if (workers[device.serial]?.resolveRegister) {
-                workers[device.serial].resolveRegister!()
-                delete workers[device.serial]?.resolveRegister
-            }
-        }
-
-        const handleError = async(err: any) => {
-            log.error('Failed start device worker "%s": %s', device.serial, err)
-            rejectReady()
-            resolveRegister()
-
-            if (err instanceof procutil.ExitError) {
-                log.error('Device worker "%s" died with code %s', device.serial, err.code)
-                log.info('Restarting device worker "%s"', device.serial)
-
-                await new Promise(r => setTimeout(r, 2000))
-                work(device)
-                return
-            }
-        }
-
-        const worker = spawn(device, resolveReady!, handleError)
-
+    const removeDevice = async(device: ADBDevice) => {
         try {
-            await Promise.all([
-                workers[device.serial].register.then(() =>
-                    log.info('Registered device "%s"', device.serial)
-                ),
-                ready.then(() =>
-                    log.info('Device "%s" is ready', device.serial)
-                )
-            ])
+            log.info('Removing device %s', device.serial)
+            await processManager.remove(device.serial)
         }
-        catch (e) {
-            return
+        catch (err) {
+            log.error('Error removing device process "%s": %s', device.serial, err)
         }
+    }
 
-        if (!workers[device.serial]) { // when device disconnected - stop restart loop
-            return
-        }
-
-        // Worker stop
-        workers[device.serial].terminate = async() => {
-            resolveRegister()
-            delete workers[device.serial]
-
-            await worker?.kill?.() // if process exited - no effect
-            log.info('Cleaning up device worker "%s"', device.serial)
-
-            // Tell others the device is gone
+    // Tell others we found a device
+    const register = (device: ADBDevice) => new Promise<void>(
+        async(resolve, reject) => {
             push.send([
                 wireutil.global,
-                wireutil.envelope(new wire.DeviceAbsentMessage(device.serial))
+                wireutil.pack(DeviceIntroductionMessage, {
+                    serial: device.serial,
+                    status: wireutil.toDeviceStatus(device.type) || 1,
+                    provider: ProviderMessage.create({
+                        channel: solo,
+                        name: options.name
+                    }),
+                    deviceType: options.deviceType
+                })
             ])
 
-            stats()
+            log.info('Registering device "%s"', device.serial)
 
-            // Wait while DeviceAbsentMessage processed on app side (1s)
-            await new Promise(r => setTimeout(r, 1000))
+            process.nextTick(() => { // after creating process context
+                const managedProcess = processManager.get(device.serial)
+                if (!managedProcess) return
+
+                const timeout = setTimeout(() => reject('Register timeout'), BASE_DELAY)
+                managedProcess.context.resolveRegister = () => {
+                    clearTimeout(timeout)
+                    delete managedProcess?.context?.resolveRegister
+                    resolve()
+                }
+            })
+        }
+    )
+
+    const startDeviceWork = async(device: ADBDevice, restart = false, reregister = false) => {
+        if (!processManager.has(device.serial)) return stats(false)
+
+        const managedProcess = processManager.get(device.serial)
+        if (!managedProcess) return
+
+        if (restart || reregister) {
+            log.warn('Trying to %s device again, delay 10 sec [%s]', restart ? 'start' : 'register', device.serial)
+            await new Promise(r => setTimeout(r, BASE_DELAY))
         }
 
-        workers[device.serial].state = 'running'
+        log.info('Starting work for device "%s"', device.serial)
+
+        if (reregister) {
+            managedProcess.context.register = register(device)
+        }
+
+        if (!restart) {
+            try {
+                // Wait for registration
+                await managedProcess.context.register
+                log.info('Device "%s" registered successfully', device.serial)
+            }
+            catch (err: any) {
+                log.error('Device "%s" registration failed: %s', device.serial, err?.message || err)
+                return startDeviceWork(device, false, true)
+            }
+        }
+
+        // Start the process (this will spawn and wait for ready)
+        const started = await processManager.start(device.serial)
+
+        if (!started) {
+            log.error('Failed to start device process [%s]', device.serial)
+            return startDeviceWork(device, true, false)
+        }
 
         stats()
 
         // Tell others the device state changed
         push.send([
             wireutil.global,
-            wireutil.envelope(new wire.DeviceStatusMessage(device.serial, wireutil.toDeviceStatus(device.type)))
+            wireutil.pack(DeviceStatusMessage, {
+                serial: device.serial,
+                status: wireutil.toDeviceStatus(device.type)
+            })
         ])
     }
 
@@ -303,97 +269,150 @@ export default (async function(options: Options) {
         port: options.adbPort,
         host: options.adbHost
     })
+
+    // TODO: add ADBObserver.enableHealthCheck(serial) to check only filtered devices
+    tracker.on('healthcheck', async(stats) => {
+        log.info('Healthcheck [OK: %s, BAD: %s]', stats.ok, stats.bad)
+
+        // Check for stuck workers
+        const stuckProcesses = processManager.checkHealth()
+
+        // Stop and restart stuck workers
+        for (const serial of stuckProcesses) {
+            log.error('Restarting stuck worker "%s"', serial)
+
+            try {
+                const device = tracker.getDevice(serial)
+                if (device) {
+                    await removeDevice(device)
+                }
+            }
+            catch (err) {
+                log.error('Error restarting stuck worker "%s": %s', serial, err)
+            }
+        }
+    })
+
     log.info('Tracking devices')
 
-    tracker.on('connect', filterDevice((device) => {
-        if (workers[device.serial]) {
+    tracker.on('connect', filterDevice(async(device) => {
+        if (processManager.has(device.serial)) {
             log.warn('Device has been connected twice. Skip.')
             return
         }
 
         log.info('Connected device "%s" [%s]', device.serial, device.type)
 
-        workers[device.serial] = {
-            state: 'waiting',
-            time: Date.now(),
-            terminate: () => {},
+        // Create device context with registration promise
+        const deviceContext: DeviceContext = {
+            device,
             register: register(device) // Register device immediately, before 'running' state
+        }
+
+        // Create managed process
+        const created = await processManager.create(device.serial, deviceContext, {
+            initialState: 'waiting',
+            resourceCount: RESOURCE_ALLOCATION_COUNT // Allocate 2 ports per device
+        })
+
+        if (!created) {
+            log.error('Failed to create process for device "%s"', device.serial)
+            return
         }
 
         stats()
 
         if (device.type === 'device') {
-            work(device)
+            startDeviceWork(device)
             return
         }
 
+        // TODO: add options.unavailableTimeToReconnect (default: 30sec)
         // Try to reconnect device if it is not available for more than 30 seconds
-        if (device.serial.includes(':') && workers[device.serial]) {
-            workers[device.serial].waitingTimeoutTimer = setTimeout((serial) => {
+        if (device.serial.includes(':')) {
+            const timer = setTimeout(serial => {
                 const device = tracker.getDevice(serial)
                 if (device && !['device', 'emulator'].includes(device?.type)) {
                     device.reconnect()
                 }
             }, 30_000, device.serial)
+
+            processManager.setTimer(device.serial, timer)
         }
     }))
 
-    tracker.on('update', filterDevice((device, oldType) => {
-        if (!['device', 'emulator'].includes(device.type)) {
-            log.info('Lost device "%s" [%s]', device.serial, device.type)
-            return stop(device)
-        }
-
+    tracker.on('update', filterDevice(async(device, oldType) => {
         log.info('Device "%s" is now "%s" (was "%s")', device.serial, device.type, oldType)
 
-        // If not running, but can
-        if (device.type === 'device' && workers[device.serial]?.state === 'waiting') {
-            clearTimeout(workers[device.serial].waitingTimeoutTimer)
-            work(device)
+        if (!['device', 'emulator'].includes(device.type)) {
+            // Device went offline - stop worker but keep it in waiting state
+            log.info('Device "%s" went offline [%s]', device.serial, device.type)
+
+            const managedProcess = processManager.get(device.serial)
+            if (managedProcess && managedProcess.state !== 'waiting') {
+                try {
+                    await processManager.stop(device.serial)
+                }
+                catch (err) {
+                    log.error('Error stopping device worker "%s": %s', device.serial, err)
+                }
+
+                // Set back to waiting state (keep process and ports allocated)
+                processManager.setState(device.serial, 'waiting')
+            }
+            return
+        }
+
+        const managedProcess = processManager.get(device.serial)
+        if (device.type === 'device' && managedProcess?.state !== 'running') {
+            // Immediately cancel device unreachable timeout
+            processManager.clearTimer(device.serial)
+
+            startDeviceWork(device)
         }
     }))
 
+    tracker.on('stuck', async(device, health) => {
+        log.warn(
+            'Device %s is stuck [attempts: %s, first_healthcheck: %s, last_healthcheck: %s]',
+            device.serial,
+            new Date(health.firstFailureTime).toISOString(),
+            new Date(health.lastAttemptTime).toISOString()
+        )
+
+        if (!processManager.has(device.serial)) {
+            log.warn('Device is stuck, but process is not running')
+            return
+        }
+
+        removeDevice(device)
+    })
+
     tracker.on('disconnect', filterDevice(async(device) => {
-        log.info('Disconnect device "%s" [%s]', device.serial, device.type)
-        clearTimeout(workers[device.serial]?.waitingTimeoutTimer)
-        await stop(device)
-        delete workers[device.serial]
+        log.info('Device is disconnected "%s" [%s]', device.serial, device.type)
+
+        if (!processManager.has(device.serial)) {
+            log.warn(
+                'Device is disconnected, but process is not running %s',
+                device.isStuck ? '[Device got stuck earlier]' : ''
+            )
+            return
+        }
+
+        if (!device.isStuck) {
+            removeDevice(device)
+        }
     }))
+
+    tracker.on('error', err => {
+        log.error('ADBObserver error: %s', err?.message)
+    })
 
     tracker.start()
 
-    let statsTimer: NodeJS.Timeout
-    const stats = (twice = true) => {
-        const all = Object.keys(workers).length
-        const result: any = {
-            waiting: [],
-            running: []
-        }
-        for (const serial of Object.keys(workers)) {
-            if (workers[serial].state === 'running') {
-                result.running.push(serial)
-                continue
-            }
-            result.waiting.push(serial)
-        }
-
-        log.info(`Providing ${result.running.length} of ${all} device(s); waiting for [${result.waiting.join(', ')}]`)
-        log.info(`Providing all ${all} of ${tracker.count} device(s)`)
-        log.info(`Providing all ${tracker.count} device(s)`)
-
-        if (twice) {
-            clearTimeout(statsTimer)
-            statsTimer = setTimeout(stats, 10000, false)
-        }
-    }
-
-    lifecycle.observe(async() => {
-        await Promise.all(
-            Object.values(workers)
-                .map(worker =>
-                    worker.terminate()
-                )
-        )
+    lifecycle.observe(() => {
+        // Clear timers
+        clearTimeout(statsTimer)
 
         stats(false)
         tracker.destroy()
@@ -401,5 +420,8 @@ export default (async function(options: Options) {
         ;[push, sub].forEach((sock) =>
             sock.close()
         )
+
+        // Clean up all processes
+        return processManager.cleanup()
     })
-})
+}
