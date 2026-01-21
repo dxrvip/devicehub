@@ -176,7 +176,7 @@ export class ProcessManager<TContext = any, TResources = any> {
                 }
             }
 
-            const handleError = async (err: Error) => {
+            const handleError = async (err: any) => {
                 this.log.error('Process "%s" error: %s', id, err.message)
                 cleanup()
 
