@@ -1,14 +1,5 @@
 import * as iosutil from '../util/iosutil.js'
 import EventEmitter from 'events'
-import { appendFileSync } from 'fs'
-
-const TOUCH_LOG_PATH = '/tmp/wda-touch-debug.log'
-
-function debugLog(data: Record<string, unknown>) {
-    try {
-        appendFileSync(TOUCH_LOG_PATH, JSON.stringify({t: Date.now(), ...data}) + '\n')
-    } catch (_) { /* ignore write errors */ }
-}
 
 export type IOSOrientation = 'PORTRAIT' | 'LANDSCAPE' | 'UIA_DEVICE_ORIENTATION_LANDSCAPERIGHT' | 'UIA_DEVICE_ORIENTATION_PORTRAIT_UPSIDEDOWN'
 export type IOSBatteryState = 'full' | 'unplugged' | 'charging'
@@ -391,8 +382,6 @@ export default class WdaClient extends EventEmitter<WDAEvents> {
     touchDown(params: TouchParams) {
         if (this.deviceType === 'Apple TV') return
 
-        debugLog({evt: 'touchDown', prevState: this.touchState, busy: this.touchBusy, x: params.x, y: params.y})
-
         if (this.touchBusy) {
             // WDA is still processing a previous gesture -- drop this one
             this.touchState = 'idle'
@@ -414,8 +403,6 @@ export default class WdaClient extends EventEmitter<WDAEvents> {
 
         const filtered = this.touchState === 'down' && dx < WdaClient.TAP_MAX_DISTANCE && dy < WdaClient.TAP_MAX_DISTANCE
 
-        debugLog({evt: 'touchMove', state: this.touchState, x: params.x, y: params.y, dx, dy, filtered, bufLen: this.moveBuffer.length})
-
         if (filtered) {
             return
         }
@@ -435,24 +422,11 @@ export default class WdaClient extends EventEmitter<WDAEvents> {
         }
 
         if (!this.deviceSize) {
-            debugLog({evt: 'touchUp', state: this.touchState, gesture: 'none', reason: 'noDeviceSize'})
             this.touchState = 'idle'
             return
         }
 
         const duration = Date.now() - this.touchStartTime
-        const gesture = this.touchState === 'down'
-            ? (duration >= WdaClient.TAP_MAX_DURATION_MS ? 'longPress' : 'tap')
-            : 'swipe'
-
-        debugLog({
-            evt: 'touchUp',
-            state: this.touchState,
-            gesture,
-            duration,
-            bufLen: this.moveBuffer.length,
-            deviceSize: this.deviceSize,
-        })
 
         this.touchBusy = true
         try {
@@ -480,8 +454,6 @@ export default class WdaClient extends EventEmitter<WDAEvents> {
         const x = this.touchStartPos.x * this.deviceSize.width
         const y = this.touchStartPos.y * this.deviceSize.height
 
-        debugLog({evt: 'performTap', x, y, duration: 0.1})
-
         await this.handleRequest({
             method: 'POST',
             uri: `${this.baseUrl}/session/${this.sessionId}/wda/touchAndHold`,
@@ -494,8 +466,6 @@ export default class WdaClient extends EventEmitter<WDAEvents> {
 
         const x = this.touchStartPos.x * this.deviceSize.width
         const y = this.touchStartPos.y * this.deviceSize.height
-
-        debugLog({evt: 'performLongPress', x, y, duration: durationMs / 1000})
 
         await this.handleRequest({
             method: 'POST',
@@ -542,17 +512,6 @@ export default class WdaClient extends EventEmitter<WDAEvents> {
         const gestureDurationSec = Math.max((lastMove.time - this.touchStartTime) / 1000, 0.05)
         const velocity = Math.max(distance / gestureDurationSec, WdaClient.MIN_SWIPE_VELOCITY)
 
-        debugLog({
-            evt: 'performSwipe',
-            fromX, fromY, toX, toY,
-            distance,
-            gestureDurationSec,
-            velocity,
-            moveCount: this.moveBuffer.length,
-            isCurved,
-            maxDeviation: lineLenSq > 0 ? Math.sqrt(maxCrossSq / lineLenSq) : 0,
-        })
-
         if (isCurved) {
             await this.performCurvedSwipe(w, h, gestureDurationSec)
             return
@@ -598,13 +557,6 @@ export default class WdaClient extends EventEmitter<WDAEvents> {
         }
 
         actions.push({type: 'pointerUp', button: 0})
-
-        debugLog({
-            evt: 'performCurvedSwipe',
-            pointCount,
-            moveDurationMs,
-            totalActions: actions.length,
-        })
 
         await this.handleRequest({
             method: 'POST',
@@ -799,16 +751,9 @@ export default class WdaClient extends EventEmitter<WDAEvents> {
 
             const body = await response.json()
 
-            if (isTouchReq) {
-                debugLog({evt: 'wdaResponse', uri: requestOpt.uri, status: response.status, elapsed: Date.now() - startMs, body})
-            }
-
             return body
         }
         catch (err: any) {
-            if (isTouchReq) {
-                debugLog({evt: 'wdaError', uri: requestOpt.uri, elapsed: Date.now() - startMs, error: err?.message || String(err)})
-            }
             this.emit('error', new Error(`WDA request error: ${err?.error?.value?.message || err?.message || err}`))
         }
     }
