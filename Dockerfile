@@ -10,9 +10,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY . .
 
-RUN sed -i 's%./node_modules/.bin/tsx%node%g' ./bin/stf.mjs && \
-    npm ci --python="/usr/bin/python3" --loglevel http && \
-    ./node_modules/.bin/tsc -p tsconfig.node.json && \
+RUN npm ci --python="/usr/bin/python3" --loglevel http && \
     npm prune --production
 
 
@@ -47,9 +45,9 @@ COPY --from=builder /app .
 RUN rm -rf ./ui
 COPY --from=builder /app/ui/dist ./ui/dist
 
-RUN ln -s /app/bin/stf.mjs /app/bin/stf && \
-    ln -s /app/bin/stf.mjs /app/bin/devicehub && \
-    ln -s /app/bin/stf.mjs /app/bin/dh
+RUN ln -s /app/.build/bin/stf.mjs /app/.build/bin/stf && \
+    ln -s /app/.build/bin/stf.mjs /app/.build/bin/devicehub && \
+    ln -s /app/.build/bin/stf.mjs /app/.build/bin/dh
 
 USER devicehub-user
 
