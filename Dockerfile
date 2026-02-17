@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
 COPY . .
 
 RUN npm ci --python="/usr/bin/python3" --loglevel http && \
+    npm run build && \
     npm prune --production
 
 
@@ -29,7 +30,7 @@ LABEL org.opencontainers.image.vendor=VKCOM
 LABEL org.opencontainers.image.description="Control and manage Android and iOS devices from your browser."
 LABEL org.opencontainers.image.licenses=Apache-2.0
 
-ENV PATH=/app/bin:$PATH
+ENV PATH=/app/.build/bin:$PATH
 ENV NODE_OPTIONS="--max-old-space-size=32768"
 
 EXPOSE 3000
