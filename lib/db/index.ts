@@ -13,9 +13,8 @@ import {type SocketWrapper} from '../util/zmqutil.js'
 const log = logger.createLogger('db')
 
 const options = {
-    // These environment variables are exposed when we --link to a
-    // MongoDB container.
-    url: process.env.MONGODB_PORT_27017_TCP || 'mongodb://127.0.0.1:27017',
+    // 优先使用显式的 MONGODB_URL / MONGODB_URI（更直观），兼容旧的 docker link 变量
+    url: process.env.MONGODB_URL || process.env.MONGODB_URI || process.env.MONGODB_PORT_27017_TCP || 'mongodb://127.0.0.1:27017',
     db: process.env.MONGODB_DB_NAME || 'stf',
     authKey: process.env.MONGODB_ENV_AUTHKEY,
     adbPortsRange: process.env.adbPortsRange || '29000-29999',
@@ -78,6 +77,8 @@ export default class DbClient {
             return DbClient.connection
         }
 
+        // 在连接前打印出最终使用的 URL（便于定位）
+        log.info('Mongo URL used: %s', options.url)
         const records = await srv.resolve(options.url) // why?
         if (!records.shift()) {
             throw new Error('No hosts left to try')

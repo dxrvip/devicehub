@@ -34,40 +34,22 @@ services:
         restart: unless-stopped
         networks:
             devicehub:
-    adbd:
-        container_name: adbd
-        image: "devicefarmer/adb:latest"
-        restart: unless-stopped
-        volumes:
-            - /dev/bus/usb:/dev/bus/usb
-        privileged: true
-        healthcheck:
-            test: nc -vz 127.0.0.1 5037
-            interval: 1m30s
-            timeout: 30s
-            retries: 5
-            start_period: 30s
-        networks:
-            devicehub:
-    devicehub-mongo:
-        image: mongo:7.0
-        hostname: devicehub-mongo
-        container_name: devicehub-mongo
-        ports:
-            - 27017:27017
-        entrypoint: ["mongod", "--replSet", "devicehub-rs", "--bind_ip_all"]
-        healthcheck:
-            test: echo "rs.status()" | mongosh --port 27017 --quiet
-            interval: 5s
-            timeout: 30s
-            start_period: 0s
-            start_interval: 1s
-            retries: 30
-        restart: unless-stopped
-        networks:
-            devicehub:
-        volumes:
-            - devicehub-db-volume:/data/db
+    # adbd:
+    #     container_name: adbd
+    #     image: "devicefarmer/adb:latest"
+    #     restart: unless-stopped
+    #     volumes:
+    #         - /dev/bus/usb:/dev/bus/usb
+    #     privileged: true
+    #     healthcheck:
+    #         test: nc -vz 127.0.0.1 5037
+    #         interval: 1m30s
+    #         timeout: 30s
+    #         retries: 5
+    #         start_period: 30s
+    #     networks:
+    #         devicehub:
+   
     devicehub-mongosetup:
         image: mongo:7.0
         container_name: devicehub-mongosetup
@@ -86,10 +68,10 @@ services:
         container_name: devicehub-migrate
         env_file:
             - scripts/variables.env
+        environment:
+            - MONGODB_URL=mongodb://8.163.31.31:27017
         command: stf migrate
         depends_on:
-            devicehub-mongosetup:
-                condition: service_completed_successfully
         networks:
             devicehub:
     devicehub-app:

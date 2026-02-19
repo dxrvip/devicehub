@@ -34,30 +34,10 @@ services:
         restart: unless-stopped
         networks:
             devicehub:
-    devicehub-mongo:
-        image: mongo:7.0
-        hostname: devicehub-mongo
-        container_name: devicehub-mongo
-        ports:
-            - 27017:27017
-        entrypoint: ["mongod", "--replSet", "devicehub-rs", "--bind_ip_all"]
-        healthcheck:
-            test: echo "rs.status()" | mongosh --port 27017 --quiet
-            interval: 5s
-            timeout: 30s
-            start_period: 0s
-            start_interval: 1s
-            retries: 30
-        networks:
-            devicehub:
-        volumes:
-            - devicehub-db-volume:/data/db
+   
     devicehub-mongosetup:
         image: mongo:7.0
         container_name: devicehub-mongosetup
-        depends_on:
-            devicehub-mongo:
-                condition: service_healthy
         volumes:
             - ./scripts/mongo_setup.sh:/scripts/mongo_setup.sh
         restart: "no"
@@ -179,7 +159,7 @@ services:
             - "7160:7160"
             - "7170:7170"
         depends_on:
-            devicehub-migrate:
+            devicehub-migrate:           
                 condition: service_completed_successfully
         restart: unless-stopped
         networks:
